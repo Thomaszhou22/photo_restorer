@@ -240,32 +240,26 @@ function App() {
       srcCtx.filter = `brightness(${brightness}%) contrast(${contrast}%)`
       srcCtx.drawImage(srcImg, 0, 0)
 
-      let workCanvas = srcCanvas
-      let workCorners = [...corners]
+      const w = Math.sqrt((corners[1].x - corners[0].x) ** 2 + (corners[1].y - corners[0].y) ** 2)
+      const h = Math.sqrt((corners[3].x - corners[0].x) ** 2 + (corners[3].y - corners[0].y) ** 2)
+      let result = perspectiveTransform(srcCanvas, corners, Math.round(w), Math.round(h))
+
       if (rotation !== 0) {
         const rad = (rotation * Math.PI) / 180
         const sin = Math.abs(Math.sin(rad))
         const cos = Math.abs(Math.cos(rad))
-        const newW = srcImg.width * cos + srcImg.height * sin
-        const newH = srcImg.width * sin + srcImg.height * cos
+        const newW = Math.round(result.width * cos + result.height * sin)
+        const newH = Math.round(result.width * sin + result.height * cos)
         const rotCanvas = document.createElement('canvas')
         rotCanvas.width = newW
         rotCanvas.height = newH
         const rotCtx = rotCanvas.getContext('2d')!
         rotCtx.translate(newW / 2, newH / 2)
         rotCtx.rotate(rad)
-        rotCtx.drawImage(srcCanvas, -srcImg.width / 2, -srcImg.height / 2)
-        const cx = srcImg.width / 2, cy = srcImg.height / 2
-        workCorners = corners.map(c => {
-          const dx = c.x - cx, dy = c.y - cy
-          return { x: dx * Math.cos(rad) - dy * Math.sin(rad) + newW / 2, y: dx * Math.sin(rad) + dy * Math.cos(rad) + newH / 2 }
-        })
-        workCanvas = rotCanvas
+        rotCtx.drawImage(result, -result.width / 2, -result.height / 2)
+        result = rotCanvas
       }
 
-      const w = Math.sqrt((workCorners[1].x - workCorners[0].x) ** 2 + (workCorners[1].y - workCorners[0].y) ** 2)
-      const h = Math.sqrt((workCorners[3].x - workCorners[0].x) ** 2 + (workCorners[3].y - workCorners[0].y) ** 2)
-      const result = perspectiveTransform(workCanvas, workCorners, Math.round(w), Math.round(h))
       setPreviewUrl(result.toDataURL('image/png'))
     } catch (err) { console.error(err) }
   }, [imageUrl, corners, rotation, brightness, contrast, imgSize])
