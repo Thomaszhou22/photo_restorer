@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { Upload, RotateCcw, Download, Sparkles, Move, Image as ImageIcon, Loader2, RotateCw, Sun, Contrast, Languages, ExternalLink } from 'lucide-react'
+import { Upload, RotateCcw, Download, Sparkles, Move, Image as ImageIcon, Loader2, RotateCw, Sun, Contrast, Languages, ExternalLink, ZoomIn, ZoomOut } from 'lucide-react'
 
 type Step = 'upload' | 'edit'
 type Lang = 'zh' | 'en'
@@ -27,6 +27,7 @@ const i18n = {
     processing: '处理中...',
     step1: '上传照片',
     step2: '校正 & 下载',
+    resetZoom: '重置',
   },
   en: {
     title: 'Photo Restorer',
@@ -50,6 +51,7 @@ const i18n = {
     processing: 'Processing...',
     step1: 'Upload Photo',
     step2: 'Correct & Download',
+    resetZoom: 'Reset',
   },
 }
 
@@ -135,12 +137,25 @@ function App() {
   const [contrast, setContrast] = useState(100)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [imgSize, setImgSize] = useState({ w: 0, h: 0 })
+  const [zoom, setZoom] = useState(1)
+  const [panX, setPanX] = useState(0)
+  const [panY, setPanY] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const draggingIdx = useRef<number | null>(null)
   const t = i18n[lang]
   const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const gestureRef = useRef<{
+    type: 'none' | 'pan' | 'pinch'
+    startDist: number
+    startZoom: number
+    startX: number
+    startY: number
+    startPanX: number
+    startPanY: number
+  }>({ type: 'none', startDist: 0, startZoom: 1, startX: 0, startY: 0, startPanX: 0, startPanY: 0 })
 
   const handleFile = useCallback(async (file: File) => {
     const url = URL.createObjectURL(file)
@@ -158,10 +173,13 @@ function App() {
     setBrightness(100)
     setContrast(100)
     setPreviewUrl(null)
+    setZoom(1)
+    setPanX(0)
+    setPanY(0)
     setStep('edit')
   }, [])
 
-  // Draw canvas with corners overlay (edit area)
+  // Draw canvas
   useEffect(() => {
     if (step !== 'edit' || !imageUrl || !canvasRef.current || !containerRef.current) return
     const canvas = canvasRef.current
@@ -172,7 +190,7 @@ function App() {
       const maxW = container.clientWidth - 32
       const maxH = 500
       const scale = Math.min(maxW / img.width, maxH / img.height, 1)
-      const dispW = img.width * scale
+            const dispW = img.width * scale
       const dispH = img.height * scale
       canvas.width = dispW
       canvas.height = dispH
@@ -180,7 +198,6 @@ function App() {
       ctx.clearRect(0, 0, dispW, dispH)
       ctx.drawImage(img, 0, 0, dispW, dispH)
 
-      // Draw corner overlay
       ctx.strokeStyle = '#3b82f6'
       ctx.lineWidth = 2
       ctx.setLineDash([6, 4])
@@ -204,13 +221,11 @@ function App() {
     img.src = imageUrl
   }, [step, imageUrl, corners])
 
-  // Update preview on changes (debounced)
+  // Preview (debounced)
   useEffect(() => {
     if (step !== 'edit' || !imageUrl || corners.length === 0) return
     if (previewTimerRef.current) clearTimeout(previewTimerRef.current)
-    previewTimerRef.current = setTimeout(() => {
-      updatePreview()
-    }, 300)
+    previewTimerRef.current = setTimeout(() => { updatePreview() }, 300)
     return () => { if (previewTimerRef.current) clearTimeout(previewTimerRef.current) }
   }, [corners, rotation, brightness, contrast, step])
 
@@ -218,8 +233,6 @@ function App() {
     if (!imageUrl || corners.length === 0 || imgSize.w === 0) return
     try {
       const srcImg = await loadImage(imageUrl)
-
-      // Apply brightness/contrast first
       const srcCanvas = document.createElement('canvas')
       srcCanvas.width = srcImg.width
       srcCanvas.height = srcImg.height
@@ -227,7 +240,6 @@ function App() {
       srcCtx.filter = `brightness(${brightness}%) contrast(${contrast}%)`
       srcCtx.drawImage(srcImg, 0, 0)
 
-      // Apply rotation
       let workCanvas = srcCanvas
       let workCorners = [...corners]
       if (rotation !== 0) {
@@ -243,107 +255,188 @@ function App() {
         rotCtx.translate(newW / 2, newH / 2)
         rotCtx.rotate(rad)
         rotCtx.drawImage(srcCanvas, -srcImg.width / 2, -srcImg.height / 2)
-
         const cx = srcImg.width / 2, cy = srcImg.height / 2
         workCorners = corners.map(c => {
           const dx = c.x - cx, dy = c.y - cy
-          return {
-            x: dx * Math.cos(rad) - dy * Math.sin(rad) + newW / 2,
-            y: dx * Math.sin(rad) + dy * Math.cos(rad) + newH / 2,
-          }
+          return { x: dx * Math.cos(rad) - dy * Math.sin(rad) + newW / 2, y: dx * Math.sin(rad) + dy * Math.cos(rad) + newH / 2 }
         })
         workCanvas = rotCanvas
       }
 
-      // Perspective transform
       const w = Math.sqrt((workCorners[1].x - workCorners[0].x) ** 2 + (workCorners[1].y - workCorners[0].y) ** 2)
       const h = Math.sqrt((workCorners[3].x - workCorners[0].x) ** 2 + (workCorners[3].y - workCorners[0].y) ** 2)
       const result = perspectiveTransform(workCanvas, workCorners, Math.round(w), Math.round(h))
       setPreviewUrl(result.toDataURL('image/png'))
-    } catch (err) {
-      console.error(err)
-    }
+    } catch (err) { console.error(err) }
   }, [imageUrl, corners, rotation, brightness, contrast, imgSize])
 
-  const getCanvasPoint = useCallback((e: React.MouseEvent | React.TouchEvent, canvas: HTMLCanvasElement) => {
+  // Convert client coords to image coords accounting for zoom/pan
+  const clientToImage = useCallback((clientX: number, clientY: number): Point | null => {
+    const canvas = canvasRef.current
+    if (!canvas || imgSize.w === 0) return null
     const rect = canvas.getBoundingClientRect()
-    const scaleX = canvas.width / rect.width
-    const scaleY = canvas.height / rect.height
-    let clientX: number, clientY: number
-    if ('touches' in e) {
-      clientX = e.touches[0].clientX
-      clientY = e.touches[0].clientY
-    } else {
-      clientX = e.clientX
-      clientY = e.clientY
-    }
-    const px = (clientX - rect.left) * scaleX
-    const py = (clientY - rect.top) * scaleY
-    const scale = canvas.width / (imgSize.w || canvas.width)
-    return { x: px / scale, y: py / scale }
-  }, [imgSize])
+    const cssX = clientX - rect.left
+    const cssY = clientY - rect.top
+    const imgX = (cssX - panX) / zoom
+    const imgY = (cssY - panY) / zoom
+    const scale = canvas.width / imgSize.w
+    return { x: imgX / scale, y: imgY / scale }
+  }, [imgSize, zoom, panX, panY])
 
-  const handlePointerDown = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (!canvasRef.current || imgSize.w === 0) return
-    const pt = getCanvasPoint(e, canvasRef.current)
-    const scale = canvasRef.current.width / imgSize.w
-    const threshold = 20 * scale
+  const findCorner = useCallback((imgPt: Point): number | null => {
+    if (imgSize.w === 0) return null
+    const threshold = 25
     for (let i = 0; i < corners.length; i++) {
-      const dx = corners[i].x * scale - pt.x * scale
-      const dy = corners[i].y * scale - pt.y * scale
-      if (Math.sqrt(dx * dx + dy * dy) < threshold) {
-        draggingIdx.current = i
-        break
-      }
+      const dx = corners[i].x - imgPt.x
+      const dy = corners[i].y - imgPt.y
+      if (Math.sqrt(dx * dx + dy * dy) < threshold) return i
     }
-  }, [corners, imgSize, getCanvasPoint])
+    return null
+  }, [corners, imgSize])
 
-  const handlePointerMove = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (draggingIdx.current === null || !canvasRef.current || imgSize.w === 0) return
-    e.preventDefault()
-    const pt = getCanvasPoint(e, canvasRef.current)
+  // Mouse
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (!canvasRef.current || imgSize.w === 0) return
+    const pt = clientToImage(e.clientX, e.clientY)
+    if (!pt) return
+    const idx = findCorner(pt)
+    if (idx !== null) draggingIdx.current = idx
+  }, [clientToImage, findCorner, imgSize])
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (draggingIdx.current === null) return
+    const pt = clientToImage(e.clientX, e.clientY)
+    if (!pt) return
     setCorners(prev => {
       const next = [...prev]
       next[draggingIdx.current!] = { x: Math.max(0, Math.min(imgSize.w, pt.x)), y: Math.max(0, Math.min(imgSize.h, pt.y)) }
       return next
     })
-  }, [imgSize, getCanvasPoint])
+  }, [clientToImage, imgSize])
 
-  const handlePointerUp = useCallback(() => { draggingIdx.current = null }, [])
+  const handleMouseUp = useCallback(() => { draggingIdx.current = null }, [])
+
+  // Touch
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (!canvasRef.current || imgSize.w === 0) return
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      const dy = e.touches[0].clientY - e.touches[1].clientY
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      draggingIdx.current = null
+      gestureRef.current = {
+        type: 'pinch', startDist: dist, startZoom: zoom,
+        startX: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+        startY: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+        startPanX: panX, startPanY: panY,
+      }
+    } else if (e.touches.length === 1) {
+      const pt = clientToImage(e.touches[0].clientX, e.touches[0].clientY)
+      if (pt) {
+        const idx = findCorner(pt)
+        if (idx !== null) {
+          draggingIdx.current = idx
+          gestureRef.current.type = 'none'
+        } else {
+          draggingIdx.current = null
+          gestureRef.current = {
+            type: 'pan', startDist: 0, startZoom: zoom,
+            startX: e.touches[0].clientX, startY: e.touches[0].clientY,
+            startPanX: panX, startPanY: panY,
+          }
+        }
+      }
+    }
+  }, [clientToImage, findCorner, imgSize, zoom, panX, panY])
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    e.preventDefault()
+    const g = gestureRef.current
+    if (e.touches.length === 2 && g.type === 'pinch') {
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      const dy = e.touches[0].clientY - e.touches[1].clientY
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const newZoom = Math.min(5, Math.max(0.5, g.startZoom * (dist / g.startDist)))
+      const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2
+      const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2
+      const ratio = newZoom / g.startZoom
+      const newPanX = cx - (g.startX - g.startPanX) * ratio
+      const newPanY = cy - (g.startY - g.startPanY) * ratio
+      setZoom(newZoom)
+      setPanX(newPanX)
+      setPanY(newPanY)
+    } else if (e.touches.length === 1) {
+      if (draggingIdx.current !== null) {
+        const pt = clientToImage(e.touches[0].clientX, e.touches[0].clientY)
+        if (!pt) return
+        setCorners(prev => {
+          const next = [...prev]
+          next[draggingIdx.current!] = { x: Math.max(0, Math.min(imgSize.w, pt.x)), y: Math.max(0, Math.min(imgSize.h, pt.y)) }
+          return next
+        })
+      } else if (g.type === 'pan') {
+        setPanX(g.startPanX + e.touches[0].clientX - g.startX)
+        setPanY(g.startPanY + e.touches[0].clientY - g.startY)
+      }
+    }
+  }, [clientToImage, imgSize])
+
+  const handleTouchEnd = useCallback(() => {
+    draggingIdx.current = null
+    gestureRef.current.type = 'none'
+  }, [])
+
+  // Ctrl+wheel zoom
+  useEffect(() => {
+    if (step !== 'edit') return
+    const el = containerRef.current
+    if (!el) return
+    const handleWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return
+      e.preventDefault()
+      const canvas = canvasRef.current
+      if (!canvas) return
+      const rect = canvas.getBoundingClientRect()
+      const mx = e.clientX - rect.left
+      const my = e.clientY - rect.top
+      const delta = -e.deltaY * 0.005
+      const nz = Math.min(5, Math.max(0.5, zoom * (1 + delta)))
+      const ratio = nz / zoom
+      setPanX(mx - (mx - panX) * ratio)
+      setPanY(my - (my - panY) * ratio)
+      setZoom(nz)
+    }
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheel)
+  }, [step, zoom, panX, panY])
+
+  const resetZoom = useCallback(() => { setZoom(1); setPanX(0); setPanY(0) }, [])
+  const adjustZoom = useCallback((delta: number) => { setZoom(prev => Math.min(5, Math.max(0.5, prev + delta))) }, [])
 
   const resetCorners = useCallback(() => {
     if (imgSize.w === 0) return
     const margin = Math.min(imgSize.w, imgSize.h) * 0.02
     setCorners([
-      { x: margin, y: margin },
-      { x: imgSize.w - margin, y: margin },
-      { x: imgSize.w - margin, y: imgSize.h - margin },
-      { x: margin, y: imgSize.h - margin },
+      { x: margin, y: margin }, { x: imgSize.w - margin, y: margin },
+      { x: imgSize.w - margin, y: imgSize.h - margin }, { x: margin, y: imgSize.h - margin },
     ])
   }, [imgSize])
 
   const handleDownload = useCallback(() => {
     if (!previewUrl) return
     const a = document.createElement('a')
-    a.href = previewUrl
-    a.download = 'restored_photo.png'
-    a.click()
+    a.href = previewUrl; a.download = 'restored_photo.png'; a.click()
   }, [previewUrl])
 
   const startOver = useCallback(() => {
     if (imageUrl) URL.revokeObjectURL(imageUrl)
-    setPreviewUrl(null)
-    setImageUrl(null)
-    setCorners([])
-    setRotation(0)
-    setBrightness(100)
-    setContrast(100)
-    setStep('upload')
+    setPreviewUrl(null); setImageUrl(null); setCorners([])
+    setRotation(0); setBrightness(100); setContrast(100)
+    setZoom(1); setPanX(0); setPanY(0); setStep('upload')
   }, [imageUrl])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50">
-      {/* Header */}
       <header className="sticky top-0 z-50 bg-white/70 backdrop-blur-xl border-b border-gray-200/50">
         <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -363,7 +456,6 @@ function App() {
         </div>
       </header>
 
-      {/* Upload Step */}
       {step === 'upload' && (
         <div className="max-w-5xl mx-auto px-4 py-12">
           <div className="text-center mb-12">
@@ -373,7 +465,6 @@ function App() {
             <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent mb-3">{t.title}</h1>
             <p className="text-gray-500 text-lg">{t.subtitle}</p>
           </div>
-
           <div
             onClick={() => fileInputRef.current?.click()}
             onDragOver={(e) => e.preventDefault()}
@@ -385,7 +476,6 @@ function App() {
             <p className="text-gray-600 font-medium">{t.upload}</p>
             <p className="text-gray-400 text-sm mt-1">{t.dragDrop}</p>
           </div>
-
           <div className="grid md:grid-cols-3 gap-6 mt-12">
             {[
               { icon: Move, title: t.feature1, desc: t.feature1Desc },
@@ -404,58 +494,69 @@ function App() {
         </div>
       )}
 
-      {/* Edit Step */}
       {step === 'edit' && (
         <div className="max-w-6xl mx-auto px-4 py-6">
-          {/* Step indicator */}
           <div className="flex items-center gap-2 mb-6 text-sm text-gray-500">
-            <span>① {t.step1}</span>
-            <span>→</span>
+            <span>① {t.step1}</span><span>→</span>
             <span className="text-blue-600 font-medium">② {t.step2}</span>
           </div>
-
           <div className="grid lg:grid-cols-2 gap-6">
-            {/* Left: Edit area with canvas */}
             <div>
-              <div className="bg-white rounded-2xl p-4 shadow-soft" ref={containerRef}>
-                <canvas
-                  ref={canvasRef}
-                  className="w-full cursor-crosshair rounded-xl"
-                  onMouseDown={handlePointerDown}
-                  onMouseMove={handlePointerMove}
-                  onMouseUp={handlePointerUp}
-                  onMouseLeave={handlePointerUp}
-                  onTouchStart={handlePointerDown}
-                  onTouchMove={handlePointerMove}
-                  onTouchEnd={handlePointerUp}
-                />
+              <div className="bg-white rounded-2xl p-4 shadow-soft" ref={containerRef} style={{ touchAction: 'none' }}>
+                <div className="overflow-hidden rounded-xl" style={{ maxHeight: '500px' }}>
+                  <canvas
+                    ref={canvasRef}
+                    className="w-full cursor-crosshair rounded-xl"
+                    style={{
+                      transform: `scale(${zoom}) translate(${panX / zoom}px, ${panY / zoom}px)`,
+                      transformOrigin: 'top left',
+                      touchAction: 'none',
+                    }}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseUp}
+                    onTouchStart={handleTouchStart}
+                    onTouchMove={handleTouchMove}
+                    onTouchEnd={handleTouchEnd}
+                  />
+                </div>
               </div>
 
-              {/* Controls below canvas */}
+              {/* Zoom controls */}
+              <div className="flex items-center justify-center gap-3 mt-3">
+                <button onClick={() => adjustZoom(-0.25)} className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition">
+                  <ZoomOut className="w-4 h-4 text-gray-600" />
+                </button>
+                <button onClick={resetZoom} className="px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 transition text-sm text-gray-600">
+                  {t.resetZoom}
+                </button>
+                <button onClick={() => adjustZoom(0.25)} className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 transition">
+                  <ZoomIn className="w-4 h-4 text-gray-600" />
+                </button>
+                <span className="text-xs text-gray-400 ml-1">{Math.round(zoom * 100)}%</span>
+              </div>
+
               <div className="bg-white rounded-2xl p-5 shadow-soft mt-4 space-y-4">
                 <h3 className="font-semibold text-gray-800 flex items-center gap-2">
                   <Move className="w-4 h-4 text-blue-600" />{t.adjusting}
                 </h3>
-
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   <button onClick={resetCorners} className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 transition">
                     <RotateCcw className="w-4 h-4" />{t.resetCorners}
                   </button>
-
                   <div>
                     <label className="flex items-center gap-1 text-xs font-medium text-gray-600 mb-1">
                       <RotateCw className="w-3.5 h-3.5 text-blue-600" />{t.rotation}: {rotation}°
                     </label>
                     <input type="range" min={-45} max={45} step={0.5} value={rotation} onChange={(e) => setRotation(Number(e.target.value))} className="w-full accent-blue-600" />
                   </div>
-
                   <div>
                     <label className="flex items-center gap-1 text-xs font-medium text-gray-600 mb-1">
                       <Sun className="w-3.5 h-3.5 text-blue-600" />{t.brightness}: {brightness}%
                     </label>
                     <input type="range" min={50} max={150} value={brightness} onChange={(e) => setBrightness(Number(e.target.value))} className="w-full accent-blue-600" />
                   </div>
-
                   <div>
                     <label className="flex items-center gap-1 text-xs font-medium text-gray-600 mb-1">
                       <Contrast className="w-3.5 h-3.5 text-blue-600" />{t.contrast}: {contrast}%
@@ -466,7 +567,6 @@ function App() {
               </div>
             </div>
 
-            {/* Right: Preview */}
             <div>
               <div className="bg-white rounded-2xl p-4 shadow-soft h-full flex flex-col">
                 <h3 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
@@ -483,13 +583,8 @@ function App() {
                   )}
                 </div>
               </div>
-
-              {/* Download button */}
-              <button
-                onClick={handleDownload}
-                disabled={!previewUrl}
-                className="w-full mt-4 py-3 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-medium shadow-lift hover:shadow-lg transition disabled:opacity-50 flex items-center justify-center gap-2"
-              >
+              <button onClick={handleDownload} disabled={!previewUrl}
+                className="w-full mt-4 py-3 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-medium shadow-lift hover:shadow-lg transition disabled:opacity-50 flex items-center justify-center gap-2">
                 <Download className="w-5 h-5" />{t.downloadPng}
               </button>
             </div>
@@ -497,7 +592,6 @@ function App() {
         </div>
       )}
 
-      {/* Footer */}
       <footer className="py-6 text-center text-sm text-gray-400">
         <div className="flex items-center justify-center gap-1">
           Built with ❤️ ·{' '}
